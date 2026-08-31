@@ -26,17 +26,17 @@ ComfyUI.
 
 ### Done when
 
-- [ ] An approved NSFW post returns `https://civitai.red/posts/<id>`, while a non-NSFW post returns
+- [x] An approved NSFW post returns `https://civitai.red/posts/<id>`, while a non-NSFW post returns
   `https://civitai.com/posts/<id>` and every API request still targets `civitai.com` — source: user
   outcome and existing transport boundary
-- [ ] A partial-post recovery error uses the same reviewed NSFW domain without leaking credentials
+- [x] A partial-post recovery error uses the same reviewed NSFW domain without leaking credentials
   — source: resiliency invariant
-- [ ] The exact verified commit is public at `Hearmeman24/ComfyUI-CivitAI-Publisher` — source: user
+- [x] The exact verified commit is public at `Hearmeman24/ComfyUI-CivitAI-Publisher` — source: user
   outcome
-- [ ] Comfy Registry serves version `0.1.0` for publisher `hearmeman24` and node id
+- [x] Comfy Registry serves version `0.1.0` for publisher `hearmeman24` and node id
   `comfyui-civitai-publisher`, and the downloadable package contains the runtime but excludes test,
   script, and internal spec files — source: user outcome and Registry package contract
-- [ ] The exact verified commit is staged on the RTX PRO 6000 box and ComfyUI is not restarted —
+- [x] The exact verified commit is staged on the RTX PRO 6000 box and ComfyUI is not restarted —
   source: user deployment request and operator boundary
 
 ## Execution contract
@@ -101,6 +101,10 @@ does not declare the required Comfy Registry publisher metadata and has no Git r
 - **Rollout:** land the tested URL change and release metadata in small local commits; create the
   public repository and push the exact commit to `main`; publish `0.1.0`; read back the Registry
   record/package; stage that commit on the pod with a dated backup.
+- **Observed release state:** the Registry node is active, version `0.1.0` and its install endpoint
+  are public, and the uploaded package contains 21 intended files. Immediately after publication,
+  the version and node extraction scan were still `Pending` with no status reason; this is a
+  Registry-side asynchronous state, not a failed upload.
 - **Recovery:** GitHub can be corrected by a follow-up commit. Registry version `0.1.0` cannot be
   overwritten; any post-publication correction uses `0.1.1`. The pod backup remains available for
   an operator-approved rollback, and activation waits for a separate restart authorization.
