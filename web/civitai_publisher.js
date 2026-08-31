@@ -1,6 +1,10 @@
 import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
-import { normalizeReviewEdits, resourceGroups } from "./review_state.mjs";
+import {
+    normalizeReviewEdits,
+    resourceGroups,
+    submitRejectImmediately,
+} from "./review_state.mjs";
 
 const NODE_NAME = "CivitAIPublisher";
 const DECISION_PATH = "/civitai_publisher/decision";
@@ -247,6 +251,12 @@ function setStatus(node, state, text, postUrl = "") {
     }
 }
 
+function renderRejected(node) {
+    clearMedia(node);
+    drawCanvasMessage(node, "Rejected", "No media was uploaded");
+    setStatus(node, "rejected", "Rejected · nothing was uploaded");
+}
+
 function renderIdle(node) {
     const body = node._civitaiPublisherBody;
     node._civitaiReview = null;
@@ -321,15 +331,30 @@ async function decide(node, decision) {
     node._civitaiDecision = decision;
     body.approve.disabled = true;
     body.reject.disabled = true;
-    setStatus(node, decision === "approve" ? "publishing" : "rejected", decision === "approve" ? "Approval sent · publishing next" : "Rejecting…");
-    try {
-        await sendDecision(review.request_id, decision, reviewEdits(node, review));
-        blog("review_decided", { node_id: review.node_id, decision });
-        if (decision === "reject") {
-            clearMedia(node);
-            drawCanvasMessage(node, "Rejected", "No media was uploaded");
-            setStatus(node, "rejected", "Rejected · nothing was uploaded");
+    if (decision === "reject") {
+        blog("review_reject_requested", { node_id: review.node_id });
+        try {
+            await submitRejectImmediately(
+                () => renderRejected(node),
+                () => sendDecision(review.request_id, "reject", {}),
+            );
+            blog("review_decided", { node_id: review.node_id, decision });
+        } catch (error) {
+            if (error.status === 409) return;
+            node._civitaiDecision = "";
+            const hasMedia = renderMedia(node, review.media || []);
+            body.approve.disabled = !hasMedia;
+            body.reject.disabled = false;
+            setStatus(node, "error", `Reject failed · ${error.message || error}`);
+            bwarn("decision_failed", { node_id: review.node_id, error: error.name || "Error" });
         }
+        return;
+    }
+
+    setStatus(node, "publishing", "Approval sent · publishing next");
+    try {
+        await sendDecision(review.request_id, "approve", reviewEdits(node, review));
+        blog("review_decided", { node_id: review.node_id, decision });
     } catch (error) {
         if (error.status === 409) return;
         node._civitaiDecision = "";
@@ -379,9 +404,7 @@ function handleStatus(detail) {
         drawCanvasMessage(node, "Published", "The CivitAI post is live");
         setStatus(node, state, "Published successfully", detail.post_url || "");
     } else if (state === "rejected") {
-        clearMedia(node);
-        drawCanvasMessage(node, "Rejected", "No media was uploaded");
-        setStatus(node, state, "Rejected · nothing was uploaded");
+        renderRejected(node);
     } else if (state === "timed_out") {
         clearMedia(node);
         drawCanvasMessage(node, "Review timed out", "No media was uploaded");

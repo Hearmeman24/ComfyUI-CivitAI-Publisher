@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { normalizeReviewEdits, resourceGroups } from "../web/review_state.mjs";
+import {
+    normalizeReviewEdits,
+    resourceGroups,
+    submitRejectImmediately,
+} from "../web/review_state.mjs";
 
 test("review edits trim fields and drop empty or non-string tags", () => {
     assert.deepEqual(normalizeReviewEdits({
@@ -27,4 +31,23 @@ test("unresolved resources stay in their local model category", () => {
     assert.deepEqual(groups.map((group) => group.label), ["Checkpoints", "LoRAs"]);
     assert.equal(groups[1].rows[1].filename, "private.safetensors");
     assert.equal(groups[1].rows[1].resolved, false);
+});
+
+test("reject renders its terminal state before the server acknowledgement", async () => {
+    let rendered = false;
+    let acknowledge;
+    const pendingAcknowledgement = new Promise((resolve) => {
+        acknowledge = resolve;
+    });
+
+    const submitted = submitRejectImmediately(
+        () => {
+            rendered = true;
+        },
+        () => pendingAcknowledgement,
+    );
+
+    assert.equal(rendered, true);
+    acknowledge();
+    await submitted;
 });
