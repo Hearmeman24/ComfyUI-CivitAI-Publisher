@@ -109,7 +109,7 @@ def _safe_error(error: BaseException, token: str) -> str:
 
 
 class AioHttpTransport:
-    USER_AGENT = "ComfyUI-CivitAI-Publisher/0.1"
+    USER_AGENT = "ComfyUI-CivitAI-Publisher/0.1.1"
 
     def __init__(self):
         self._session = None

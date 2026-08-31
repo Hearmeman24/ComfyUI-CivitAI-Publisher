@@ -14,6 +14,11 @@ export function normalizeReviewEdits(value = {}) {
     };
 }
 
+export function submitRejectImmediately(renderRejected, sendDecision) {
+    renderRejected();
+    return Promise.resolve().then(sendDecision);
+}
+
 const GROUPS = {
     checkpoint: { label: "Checkpoints", order: 0 },
     lora: { label: "LoRAs", order: 1 },
