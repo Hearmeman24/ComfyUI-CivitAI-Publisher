@@ -9,6 +9,9 @@ from contextlib import contextmanager
 LOGGER_NAME = "CivitAIPublisher"
 PREFIX = f"[{LOGGER_NAME}]"
 logger = logging.getLogger(LOGGER_NAME)
+# ComfyUI installations do not all configure their root logger the same way.
+# Keep normal publisher lifecycle events visible without enabling global debug noise.
+logger.setLevel(logging.INFO)
 
 _SECRET_SEGMENTS = frozenset(
     {"key", "token", "secret", "password", "authorization", "prompt", "url", "path"}

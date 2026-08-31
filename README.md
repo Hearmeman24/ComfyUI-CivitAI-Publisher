@@ -68,6 +68,8 @@ Backend and browser logs use one searchable prefix and event fields:
 
 Events cover execution start, hash and resolution timings/cache counts, review open/decision, publish timing, cache write failures, and browser rendering/decisions. Tokens, prompts, signed URLs, and full filesystem paths are redacted; useful boolean presence fields and aggregate counts remain visible.
 
+The publisher logger explicitly runs at `INFO`, independent of ComfyUI's inherited root logger level. Routine lifecycle and performance events are therefore always enabled; genuine degraded behavior remains `WARNING` so it is still distinguishable.
+
 ## Safety and failure behavior
 
 - Reject, timeout, browser-less execution, ComfyUI Stop, or an unreadable media preview performs zero media uploads.
