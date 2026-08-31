@@ -27,10 +27,8 @@ const GROUPS = {
 export function resourceGroups(resources = []) {
     const buckets = new Map();
     for (const row of resources) {
-        const resolvedType = String(row.type || row.resource_type || "").toLowerCase();
-        const group = row.resolved
-            ? (GROUPS[resolvedType] || { label: row.type || row.resource_type || "Other", order: 50 })
-            : { label: "Unknown", order: 99 };
+        const resourceType = String(row.resource_type || row.type || "").toLowerCase();
+        const group = GROUPS[resourceType] || { label: "Other weights", order: 50 };
         if (!buckets.has(group.label)) buckets.set(group.label, { ...group, rows: [] });
         buckets.get(group.label).rows.push(row);
     }

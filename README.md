@@ -50,6 +50,8 @@ The model list comes only from ancestors of the publisher's connected `image` an
 
 It excludes unrelated workflow branches and auxiliary CLIP/text encoder, VAE, preview, and upscale weights. Disabled and zero-strength LoRAs are omitted. The scanner covers `.safetensors`, `.ckpt`, `.pt`, `.pth`, `.bin`, and `.gguf`; folder-based Diffusers repositories and legacy VHS filename tuples are not treated as publishable model resources.
 
+Resolved and unresolved files stay in their actual local category. For example, a LoRA whose exact hash is absent from CivitAI remains under **LoRAs** with `not found on CivitAI`; it is never moved into an ambiguous catch-all group beside an unrelated resource.
+
 ## Caching and performance
 
 The CivitAI-compatible identifier is the complete file SHA-256. The first calculation reads the file in 8 MiB chunks; that exact first hash cannot be safely shortened. Results are persisted at `ComfyUI/user/.civitai-publisher/hashes-v1.json` and reused while the resolved path, size, nanosecond modification/change time, inode, and device identity remain unchanged. Changing only the prompt or other workflow text does not read or hash the model files again. Concurrent requests for the same unchanged file share one in-flight calculation.
