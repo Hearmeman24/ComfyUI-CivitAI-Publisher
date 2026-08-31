@@ -6,8 +6,8 @@ const NODE_NAME = "CivitAIPublisher";
 const DECISION_PATH = "/civitai_publisher/decision";
 const PENDING_PATH = "/civitai_publisher/pending";
 const NODE_WIDTH = 560;
-const REVIEW_HEIGHT = 650;
-const STYLE_VERSION = "20260831-2";
+const REVIEW_HEIGHT = 700;
+const STYLE_VERSION = "20260831-3";
 const liveNodes = new Map();
 const waitingReviews = new Map();
 const knownReviews = new Set();
@@ -220,7 +220,9 @@ function renderResources(node, resources) {
             const name = row.resolved
                 ? `${row.name || row.filename}${row.versionName && row.versionName !== row.name ? ` · ${row.versionName}` : ""}`
                 : `${row.filename} · ${row.resolution_error || "not on CivitAI"}`;
-            resource.appendChild(el("span", "civitai-publisher-resource-name", name));
+            const resourceName = el("span", "civitai-publisher-resource-name", name);
+            resourceName.title = name;
+            resource.appendChild(resourceName);
             const strengths = Array.isArray(row.strengths) && row.strengths.length
                 ? ` @ ${row.strengths.join(" / ")}`
                 : "";
