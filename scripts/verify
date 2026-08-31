@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+VERIFY_MODE="${1:-fast}"
+if [[ "$VERIFY_MODE" != "fast" && "$VERIFY_MODE" != "full" ]]; then
+    echo "usage: ./scripts/verify [fast|full]" >&2
+    exit 2
+fi
+
+PYTHON_CANDIDATES=()
+if [[ -n "${PYTHON_BIN:-}" ]]; then
+    PYTHON_CANDIDATES+=("$PYTHON_BIN")
+fi
+if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+    PYTHON_CANDIDATES+=("$VIRTUAL_ENV/bin/python")
+fi
+PYTHON_CANDIDATES+=("${HOME}/.venvs/torch312/bin/python" "python3")
+
+VERIFY_PYTHON=""
+for candidate in "${PYTHON_CANDIDATES[@]}"; do
+    if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 10))' >/dev/null 2>&1; then
+        VERIFY_PYTHON="$candidate"
+        break
+    fi
+done
+if [[ -z "$VERIFY_PYTHON" ]]; then
+    echo "Python 3.10+ was not found; set PYTHON_BIN to ComfyUI's Python" >&2
+    exit 2
+fi
+
+"$VERIFY_PYTHON" -m py_compile __init__.py node.py civitai_publisher/*.py tests/*.py
+while IFS= read -r JSON_PATH; do
+    "$VERIFY_PYTHON" -m json.tool "$JSON_PATH" >/dev/null
+done < <(find . -type f -name '*.json' -not -path './.git/*' -print)
+node --check web/civitai_publisher.js
+node --check web/review_state.mjs
+node --test tests/test_review_state.mjs
+
+if [[ "$VERIFY_MODE" == "fast" ]]; then
+    "$VERIFY_PYTHON" -m unittest \
+        tests.test_workflow \
+        tests.test_approval \
+        tests.test_client \
+        tests.test_http_boundary \
+        tests.test_media \
+        tests.test_node_contract \
+        tests.test_frontend_contract
+else
+    "$VERIFY_PYTHON" -m unittest discover -s tests -p 'test_*.py'
+fi
+
+git diff --check
