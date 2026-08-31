@@ -7,6 +7,9 @@ from civitai_publisher import logs
 
 
 class LoggingTests(unittest.TestCase):
+    def test_publisher_logger_explicitly_enables_info_events(self):
+        self.assertEqual(logs.logger.level, logging.INFO)
+
     def test_structured_line_and_secret_redaction(self):
         line = logs.format_event(
             "resolve",
