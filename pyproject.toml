@@ -12,10 +12,17 @@ dependencies = [
     "aiohttp>=3.9,<4",
     "Pillow>=10",
 ]
+classifiers = [
+    "Operating System :: OS Independent",
+]
 
 [project.urls]
 Homepage = "https://github.com/Hearmeman24/ComfyUI-CivitAI-Publisher"
 Repository = "https://github.com/Hearmeman24/ComfyUI-CivitAI-Publisher"
+
+[tool.comfy]
+PublisherId = "hearmeman24"
+DisplayName = "CivitAI Publisher"
 
 [tool.ruff]
 line-length = 110

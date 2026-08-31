@@ -4,7 +4,13 @@ Review and publish generated images or native ComfyUI video to CivitAI without p
 
 ## Install
 
-Place this repository at:
+Install from the ComfyUI Registry with ComfyUI Manager, or with the Comfy CLI:
+
+```bash
+comfy node install comfyui-civitai-publisher
+```
+
+For a manual installation, clone this repository to:
 
 ```text
 ComfyUI/custom_nodes/ComfyUI-CivitAI-Publisher
@@ -34,7 +40,7 @@ export CIVITAI_TOKEN="your-token"
 6. Inspect the playable media, final prompt, generation metadata, resolved resources, LoRA strengths, and unknown local files directly in the node.
 7. Choose **Reject** or **Approve & publish**.
 
-An image batch and an optional video are added to one CivitAI post. The node returns the post URL, terminal status, and a compact JSON summary.
+An image batch and an optional video are added to one CivitAI post. The node returns the post URL, terminal status, and a compact JSON summary. Published NSFW posts return a `civitai.red/posts/<id>` viewing URL; non-NSFW posts return `civitai.com/posts/<id>`. API traffic continues to use `civitai.com` in both cases.
 
 [`examples/civitai-publisher-empty-image.json`](examples/civitai-publisher-empty-image.json) is a safe starter workflow for exercising the embedded review and Reject path. It does not use model weights.
 

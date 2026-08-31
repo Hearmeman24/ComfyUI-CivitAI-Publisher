@@ -169,7 +169,7 @@ class CivitAIClientTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(result.post_id, 321)
-        self.assertEqual(result.post_url, "https://civitai.com/posts/321")
+        self.assertEqual(result.post_url, "https://civitai.red/posts/321")
         urls = [call[2] if call[0] == "json" else call[1] for call in transport.calls]
         self.assertEqual(urls, [
             "https://civitai.com/api/v1/image-upload",
@@ -208,6 +208,47 @@ class CivitAIClientTests(unittest.IsolatedAsyncioTestCase):
         message = str(caught.exception)
         self.assertIn("https://civitai.com/posts/321", message)
         self.assertNotIn("secret-token", message)
+
+    async def test_nsfw_partial_post_uses_red_recovery_url(self):
+        transport = FakeTransport()
+        transport.fail_on = "post.addImage"
+        client = CivitAIClient("secret-token", transport=transport)
+        with tempfile.TemporaryDirectory() as tmp:
+            media = Path(tmp) / "image.png"
+            media.write_bytes(b"png")
+            with self.assertRaises(PartialPostError) as caught:
+                await client.publish_post(
+                    media=[MediaUpload(media, "image/png", 1, 1)],
+                    title="",
+                    description="",
+                    tags=(),
+                    nsfw=True,
+                    metadata={"prompt": "x"},
+                )
+
+        self.assertEqual(caught.exception.post_url, "https://civitai.red/posts/321")
+        self.assertNotIn("secret-token", str(caught.exception))
+
+    async def test_nsfw_custom_origin_keeps_injected_post_origin(self):
+        transport = FakeTransport()
+        client = CivitAIClient(
+            "secret-token",
+            transport=transport,
+            origin="http://127.0.0.1:8765/",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            media = Path(tmp) / "image.png"
+            media.write_bytes(b"png")
+            result = await client.publish_post(
+                media=[MediaUpload(media, "image/png", 1, 1)],
+                title="",
+                description="",
+                tags=(),
+                nsfw=True,
+                metadata={"prompt": "x"},
+            )
+
+        self.assertEqual(result.post_url, "http://127.0.0.1:8765/posts/321")
 
 
 if __name__ == "__main__":

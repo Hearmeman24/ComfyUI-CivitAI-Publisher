@@ -17,6 +17,7 @@ from .resolution_cache import ResolutionCache
 from .workflow import GenerationMetadata, HashedResource
 
 CIVITAI_ORIGIN = "https://civitai.com"
+CIVITAI_NSFW_ORIGIN = "https://civitai.red"
 SOFTWARE_NAME = "ComfyUI (CivitAI Publisher by HearmemanAI)"
 
 
@@ -27,10 +28,27 @@ class CivitAIHTTPError(RuntimeError):
         super().__init__(message)
 
 
+def _post_url(post_id: int, *, nsfw: bool, origin: str = CIVITAI_ORIGIN) -> str:
+    normalized_origin = origin.rstrip("/")
+    public_origin = (
+        CIVITAI_NSFW_ORIGIN
+        if nsfw and normalized_origin == CIVITAI_ORIGIN
+        else normalized_origin
+    )
+    return f"{public_origin}/posts/{post_id}"
+
+
 class PartialPostError(RuntimeError):
-    def __init__(self, post_id: int, detail: str, *, origin: str = CIVITAI_ORIGIN):
+    def __init__(
+        self,
+        post_id: int,
+        detail: str,
+        *,
+        nsfw: bool = False,
+        origin: str = CIVITAI_ORIGIN,
+    ):
         self.post_id = post_id
-        self.post_url = f"{origin}/posts/{post_id}"
+        self.post_url = _post_url(post_id, nsfw=nsfw, origin=origin)
         super().__init__(
             f"CivitAI post {post_id} was created but publishing did not finish. "
             f"Inspect {self.post_url}. {detail}"
@@ -521,7 +539,11 @@ class CivitAIClient:
             raise PartialPostError(
                 post_id,
                 _safe_error(exc, self._token),
+                nsfw=nsfw,
                 origin=self._origin,
             ) from exc
 
-        return PublishResult(post_id=post_id, post_url=f"{self._origin}/posts/{post_id}")
+        return PublishResult(
+            post_id=post_id,
+            post_url=_post_url(post_id, nsfw=nsfw, origin=self._origin),
+        )
