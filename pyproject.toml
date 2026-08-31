@@ -1,0 +1,25 @@
+[project]
+name = "comfyui-civitai-publisher"
+version = "0.1.0"
+description = "Review-gated CivitAI publishing for ComfyUI images and native video"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+    { name = "HearmemanAI" },
+]
+dependencies = [
+    "aiohttp>=3.9,<4",
+    "Pillow>=10",
+]
+
+[project.urls]
+Homepage = "https://github.com/Hearmeman24/ComfyUI-CivitAI-Publisher"
+Repository = "https://github.com/Hearmeman24/ComfyUI-CivitAI-Publisher"
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
