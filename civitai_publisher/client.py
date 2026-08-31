@@ -4,6 +4,7 @@ import asyncio
 import json
 import mimetypes
 import os
+import random
 import re
 import shutil
 from dataclasses import dataclass, replace
@@ -12,6 +13,7 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
+from .resolution_cache import ResolutionCache
 from .workflow import GenerationMetadata, HashedResource
 
 CIVITAI_ORIGIN = "https://civitai.com"
@@ -19,8 +21,9 @@ SOFTWARE_NAME = "ComfyUI (CivitAI Publisher by HearmemanAI)"
 
 
 class CivitAIHTTPError(RuntimeError):
-    def __init__(self, status: int, message: str):
+    def __init__(self, status: int, message: str, *, retry_after: float | None = None):
         self.status = status
+        self.retry_after = retry_after
         super().__init__(message)
 
 
@@ -90,6 +93,20 @@ def _safe_error(error: BaseException, token: str) -> str:
 class AioHttpTransport:
     USER_AGENT = "ComfyUI-CivitAI-Publisher/0.1"
 
+    def __init__(self):
+        self._session = None
+
+    async def _shared_session(self):
+        import aiohttp
+
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+        return self._session
+
+    async def close(self) -> None:
+        if self._session is not None and not self._session.closed:
+            await self._session.close()
+
     async def json(
         self,
         method: str,
@@ -107,21 +124,33 @@ class AioHttpTransport:
             "User-Agent": self.USER_AGENT,
         }
         client_timeout = aiohttp.ClientTimeout(total=timeout)
-        async with aiohttp.ClientSession(timeout=client_timeout) as session:
-            async with session.request(method, url, headers=headers, json=payload) as response:
-                text = await response.text()
-                if response.status < 200 or response.status >= 300:
-                    raise CivitAIHTTPError(
-                        response.status,
-                        f"CivitAI returned HTTP {response.status} for {_safe_url(url)}: {text[:500]}",
-                    )
+        session = await self._shared_session()
+        async with session.request(
+            method,
+            url,
+            headers=headers,
+            json=payload,
+            timeout=client_timeout,
+        ) as response:
+            text = await response.text()
+            if response.status < 200 or response.status >= 300:
+                retry_after = response.headers.get("Retry-After")
                 try:
-                    result = json.loads(text) if text else {}
-                except json.JSONDecodeError as exc:
-                    raise RuntimeError(f"CivitAI returned invalid JSON for {_safe_url(url)}") from exc
-                if not isinstance(result, dict):
-                    raise RuntimeError(f"CivitAI returned an unexpected response for {_safe_url(url)}")
-                return result
+                    retry_after_seconds = float(retry_after) if retry_after is not None else None
+                except ValueError:
+                    retry_after_seconds = None
+                raise CivitAIHTTPError(
+                    response.status,
+                    f"CivitAI returned HTTP {response.status} for {_safe_url(url)}: {text[:500]}",
+                    retry_after=retry_after_seconds,
+                )
+            try:
+                result = json.loads(text) if text else {}
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(f"CivitAI returned invalid JSON for {_safe_url(url)}") from exc
+            if not isinstance(result, dict):
+                raise RuntimeError(f"CivitAI returned an unexpected response for {_safe_url(url)}")
+            return result
 
     async def put_file(
         self,
@@ -182,15 +211,20 @@ class AioHttpTransport:
         import aiohttp
 
         client_timeout = aiohttp.ClientTimeout(total=timeout)
-        async with aiohttp.ClientSession(timeout=client_timeout) as session:
-            with Path(path).open("rb") as handle:
-                async with session.put(url, data=handle, headers={"Content-Type": content_type}) as response:
-                    if response.status not in (200, 201, 204):
-                        body = (await response.text())[:500]
-                        raise RuntimeError(
-                            f"CivitAI media storage returned HTTP {response.status} "
-                            f"for {_safe_url(url)}: {body}"
-                        )
+        session = await self._shared_session()
+        with Path(path).open("rb") as handle:
+            async with session.put(
+                url,
+                data=handle,
+                headers={"Content-Type": content_type},
+                timeout=client_timeout,
+            ) as response:
+                if response.status not in (200, 201, 204):
+                    body = (await response.text())[:500]
+                    raise RuntimeError(
+                        f"CivitAI media storage returned HTTP {response.status} "
+                        f"for {_safe_url(url)}: {body}"
+                    )
 
 
 def _version_payload(resource: HashedResource, payload: dict[str, Any]) -> HashedResource:
@@ -271,6 +305,8 @@ class CivitAIClient:
         *,
         transport: Transport | None = None,
         origin: str = CIVITAI_ORIGIN,
+        resolution_cache: ResolutionCache | None = None,
+        retry_delays: tuple[float, ...] = (0.25, 0.75),
     ):
         if not token:
             raise ValueError("CivitAI token is required")
@@ -279,28 +315,99 @@ class CivitAIClient:
         self._origin = origin.rstrip("/")
         self._api = f"{self._origin}/api"
         self._trpc = f"{self._api}/trpc"
+        self._resolution_cache = resolution_cache
+        self._retry_delays = retry_delays
 
-    async def resolve_resources(self, resources: list[HashedResource]) -> list[HashedResource]:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, _exc_type, _exc, _traceback):
+        await self.close()
+
+    async def close(self) -> None:
+        close = getattr(self._transport, "close", None)
+        if close is not None:
+            result = close()
+            if hasattr(result, "__await__"):
+                await result
+
+    async def _resolution_request(self, resource: HashedResource) -> dict[str, Any]:
+        retryable_statuses = {408, 429, 500, 502, 503, 504}
+        for attempt in range(len(self._retry_delays) + 1):
+            try:
+                return await self._transport.json(
+                    "GET",
+                    f"{self._api}/v1/model-versions/by-hash/{resource.sha256}",
+                    token=self._token,
+                    timeout=20,
+                )
+            except CivitAIHTTPError as exc:
+                if exc.status not in retryable_statuses or attempt >= len(self._retry_delays):
+                    raise
+                delay = exc.retry_after
+                if delay is None:
+                    delay = self._retry_delays[attempt] * random.uniform(0.8, 1.2)
+                await asyncio.sleep(max(0.0, min(float(delay), 5.0)))
+            except (OSError, TimeoutError):
+                if attempt >= len(self._retry_delays):
+                    raise
+                delay = self._retry_delays[attempt] * random.uniform(0.8, 1.2)
+                await asyncio.sleep(max(0.0, min(float(delay), 5.0)))
+        raise RuntimeError("unreachable resolution retry state")
+
+    async def resolve_resources(
+        self,
+        resources: list[HashedResource],
+        *,
+        metrics: dict[str, int] | None = None,
+    ) -> list[HashedResource]:
         semaphore = asyncio.Semaphore(4)
 
         async def resolve_one(resource: HashedResource) -> HashedResource:
+            cached = self._resolution_cache.get(resource.sha256) if self._resolution_cache else None
+            if cached is not None:
+                if metrics is not None:
+                    metrics["resolution_cache_hits"] = metrics.get("resolution_cache_hits", 0) + 1
+                if cached.state == "resolved":
+                    return _version_payload(resource, cached.payload)
+                return replace(resource, resolved=False, resolution_error="not found on CivitAI")
+            if metrics is not None:
+                metrics["resolution_cache_misses"] = metrics.get("resolution_cache_misses", 0) + 1
             try:
                 async with semaphore:
-                    payload = await self._transport.json(
-                        "GET",
-                        f"{self._api}/v1/model-versions/by-hash/{resource.sha256}",
-                        token=self._token,
-                        timeout=20,
-                    )
+                    payload = await self._resolution_request(resource)
+                if payload.get("id") is None:
+                    raise RuntimeError("CivitAI model hash lookup returned no model version id")
+                if self._resolution_cache is not None:
+                    self._resolution_cache.store_resolved(resource.sha256, payload)
                 return _version_payload(resource, payload)
             except CivitAIHTTPError as exc:
                 if exc.status == 404:
+                    if self._resolution_cache is not None:
+                        self._resolution_cache.store_not_found(resource.sha256)
                     return replace(resource, resolved=False, resolution_error="not found on CivitAI")
                 elif exc.status in (401, 403):
                     raise RuntimeError("CivitAI rejected the configured API token") from exc
-                else:
-                    return replace(resource, resolved=False, resolution_error=_safe_error(exc, self._token))
+                stale = (
+                    self._resolution_cache.get(resource.sha256, allow_stale_success=True)
+                    if self._resolution_cache
+                    else None
+                )
+                if stale is not None and stale.state == "resolved":
+                    if metrics is not None:
+                        metrics["resolution_stale_hits"] = metrics.get("resolution_stale_hits", 0) + 1
+                    return _version_payload(resource, stale.payload)
+                return replace(resource, resolved=False, resolution_error=_safe_error(exc, self._token))
             except Exception as exc:
+                stale = (
+                    self._resolution_cache.get(resource.sha256, allow_stale_success=True)
+                    if self._resolution_cache
+                    else None
+                )
+                if stale is not None and stale.state == "resolved":
+                    if metrics is not None:
+                        metrics["resolution_stale_hits"] = metrics.get("resolution_stale_hits", 0) + 1
+                    return _version_payload(resource, stale.payload)
                 return replace(resource, resolved=False, resolution_error=_safe_error(exc, self._token))
 
         return list(await asyncio.gather(*(resolve_one(resource) for resource in resources)))

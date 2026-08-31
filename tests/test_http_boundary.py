@@ -73,22 +73,25 @@ class HTTPBoundaryTests(unittest.IsolatedAsyncioTestCase):
             sha256="a" * 64,
             strengths=(0.8,),
         )
-        resolved = await client.resolve_resources([resource])
+        try:
+            resolved = await client.resolve_resources([resource])
 
-        with tempfile.TemporaryDirectory() as tmp:
-            media_path = Path(tmp) / "reviewed.png"
-            media_path.write_bytes(b"reviewed-media")
-            result = await client.publish_post(
-                media=(MediaUpload(media_path, "image/png", 32, 16),),
-                title="Reviewed title",
-                description="Created in test",
-                tags=("portrait",),
-                nsfw=False,
-                metadata={
-                    "prompt": "Reviewed prompt",
-                    "civitaiResources": [{"modelVersionId": resolved[0].model_version_id}],
-                },
-            )
+            with tempfile.TemporaryDirectory() as tmp:
+                media_path = Path(tmp) / "reviewed.png"
+                media_path.write_bytes(b"reviewed-media")
+                result = await client.publish_post(
+                    media=(MediaUpload(media_path, "image/png", 32, 16),),
+                    title="Reviewed title",
+                    description="Created in test",
+                    tags=("portrait",),
+                    nsfw=False,
+                    metadata={
+                        "prompt": "Reviewed prompt",
+                        "civitaiResources": [{"modelVersionId": resolved[0].model_version_id}],
+                    },
+                )
+        finally:
+            await client.close()
 
         self.assertTrue(resolved[0].resolved)
         self.assertEqual(resolved[0].name, "Local style")

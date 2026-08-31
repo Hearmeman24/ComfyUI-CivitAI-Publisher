@@ -26,6 +26,7 @@ class ApprovalPayload:
     negative_prompt: str = ""
     media: tuple[dict[str, Any], ...] = ()
     resources: tuple[dict[str, Any], ...] = ()
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def public(self, request_id: str) -> dict[str, Any]:
         return {
@@ -38,6 +39,7 @@ class ApprovalPayload:
             "nsfw": self.nsfw,
             "media": list(self.media),
             "resources": list(self.resources),
+            "metadata": dict(self.metadata),
         }
 
 
@@ -48,6 +50,7 @@ class ApprovalDecision:
     prompt: str
     tags: tuple[str, ...]
     nsfw: bool
+    request_id: str = ""
 
 
 @dataclass
@@ -104,6 +107,7 @@ class ApprovalManager:
                 prompt=_text(edits.get("prompt"), payload.prompt, 20_000),
                 tags=_tags(edits.get("tags"), payload.tags),
                 nsfw=bool(edits.get("nsfw", payload.nsfw)),
+                request_id=request_id,
             )
 
         def deliver() -> None:
@@ -142,6 +146,7 @@ class ApprovalManager:
                         payload.prompt,
                         payload.tags,
                         payload.nsfw,
+                        request_id,
                     )
                 try:
                     return await asyncio.wait_for(asyncio.shield(future), timeout=min(0.1, remaining))
