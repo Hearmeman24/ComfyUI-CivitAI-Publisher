@@ -23,6 +23,35 @@ EXCLUDED_FOLDER_CATEGORIES = {
     "download_model_base",
     "VHS_video_formats",
 }
+PUBLISHABLE_FOLDER_CATEGORIES = {
+    "checkpoints",
+    "diffusion_models",
+    "unet",
+    "loras",
+    "controlnet",
+    "embeddings",
+    "hypernetworks",
+}
+_STATIC_STRING_INPUTS = {
+    "value",
+    "text",
+    "prompt",
+    "string",
+    "caption",
+    "description",
+    "string_a",
+    "string_b",
+    "string_c",
+    "string_d",
+    "prefix",
+    "suffix",
+}
+_DYNAMIC_TEXT_NODE_MARKERS = {
+    "openrouter",
+    "ollama",
+    "llm",
+    "chatcompletion",
+}
 _DEFAULT_CACHE: HashCache | None = None
 _DEFAULT_CACHE_LOCK = threading.Lock()
 
@@ -180,13 +209,18 @@ def _call_resolver(resolve_file: Callable[..., tuple[str, Path] | None], filenam
 def discover_model_references(
     prompt: dict[str, Any],
     resolve_file: Callable[..., tuple[str, Path] | None],
+    *,
+    root_node_id: str | None = None,
 ) -> list[ModelReference]:
     merged: dict[tuple[str, str], ModelReference] = {}
     order: list[tuple[str, str]] = []
+    allowed_nodes = upstream_node_ids(prompt, root_node_id) if root_node_id else None
     for raw_node_id, node in prompt.items():
         if not isinstance(node, dict):
             continue
         node_id = str(raw_node_id)
+        if allowed_nodes is not None and node_id not in allowed_nodes:
+            continue
         inputs = node.get("inputs")
         if not isinstance(inputs, dict):
             continue
@@ -195,12 +229,19 @@ def discover_model_references(
             if resolved is None:
                 continue
             category, path = resolved
+            if category not in PUBLISHABLE_FOLDER_CATEGORIES:
+                continue
             path = Path(path)
-            resource_type = (
-                "lora"
-                if category == "loras" or candidate.category_hint == "loras"
-                else "checkpoint"
-            )
+            if category == "loras" or candidate.category_hint == "loras":
+                resource_type = "lora"
+            elif category == "controlnet":
+                resource_type = "controlnet"
+            elif category == "embeddings":
+                resource_type = "textualinversion"
+            elif category == "hypernetworks":
+                resource_type = "hypernetwork"
+            else:
+                resource_type = "checkpoint"
             key = (str(path), category)
             existing = merged.get(key)
             strength = candidate.strength if resource_type == "lora" else None
@@ -270,21 +311,81 @@ def discover_and_hash_resources(
     *,
     cache: HashCache | None = None,
     cancel: Callable[[], None] | None = None,
+    root_node_id: str | None = None,
+    metrics: dict[str, int] | None = None,
 ) -> list[HashedResource]:
     hash_cache = cache or default_hash_cache()
-    references = discover_model_references(prompt, resolve_model_file)
-    return [
-        HashedResource(
+    references = discover_model_references(
+        prompt,
+        resolve_model_file,
+        root_node_id=root_node_id,
+    )
+    resources: list[HashedResource] = []
+    for reference in references:
+        lookup = hash_cache.lookup(reference.path, cancel=cancel)
+        if metrics is not None:
+            key = "hash_hits" if lookup.cached else "hash_misses"
+            metrics[key] = metrics.get(key, 0) + 1
+            metrics["hash_bytes_read"] = metrics.get("hash_bytes_read", 0) + lookup.bytes_read
+        resources.append(HashedResource(
             filename=reference.filename,
             category=reference.category,
             path=reference.path,
             resource_type=reference.resource_type,
-            sha256=hash_cache.sha256_for(reference.path, cancel=cancel),
+            sha256=lookup.sha256,
             strengths=reference.strengths,
             node_ids=reference.node_ids,
-        )
-        for reference in references
+        ))
+    return resources
+
+
+def _link_node_id(value: Any) -> str | None:
+    if (
+        isinstance(value, list)
+        and len(value) == 2
+        and isinstance(value[0], (str, int))
+        and isinstance(value[1], int)
+    ):
+        return str(value[0])
+    return None
+
+
+def upstream_node_ids(
+    prompt: dict[str, Any],
+    root_node_id: str | None,
+    *,
+    root_inputs: tuple[str, ...] = ("image", "video"),
+) -> set[str]:
+    """Return only nodes that can contribute to the publisher's connected media."""
+
+    if root_node_id is None:
+        return {str(node_id) for node_id in prompt}
+    root = prompt.get(str(root_node_id))
+    if not isinstance(root, dict):
+        return set()
+    inputs = root.get("inputs")
+    if not isinstance(inputs, dict):
+        return set()
+
+    queue = [
+        linked
+        for name in root_inputs
+        if (linked := _link_node_id(inputs.get(name))) is not None
     ]
+    visited: set[str] = set()
+    while queue:
+        node_id = queue.pop(0)
+        if node_id in visited:
+            continue
+        visited.add(node_id)
+        node = prompt.get(node_id)
+        if not isinstance(node, dict):
+            continue
+        for value in (node.get("inputs") or {}).values():
+            linked = _link_node_id(value)
+            if linked is not None and linked not in visited:
+                queue.append(linked)
+    return visited
 
 
 def _downstream_usage(prompt: dict[str, Any], source_node_id: str) -> tuple[bool, bool]:
@@ -334,16 +435,21 @@ def _linked_strings(prompt: dict[str, Any], value: Any, max_depth: int = 8) -> l
         node = prompt.get(node_id)
         if not isinstance(node, dict):
             continue
+        class_type = str(node.get("class_type") or "").lower().replace("_", "")
+        if any(marker in class_type for marker in _DYNAMIC_TEXT_NODE_MARKERS):
+            # An LLM node's output is computed at runtime. Its configuration strings
+            # are not the value emitted from the output socket and must never be used
+            # as generation metadata.
+            continue
         for name, nested in (node.get("inputs") or {}).items():
             lowered = name.lower()
-            if isinstance(nested, str) and (
-                lowered in {"value", "text", "prompt", "string", "caption", "description"}
-                or len(nested) > 50
-            ):
+            if isinstance(nested, str) and lowered in _STATIC_STRING_INPUTS:
                 if nested.strip():
                     results.append(nested.strip())
-            elif isinstance(nested, list) and len(nested) == 2:
-                queue.append((str(nested[0]), depth + 1))
+            elif lowered in _STATIC_STRING_INPUTS:
+                linked = _link_node_id(nested)
+                if linked is not None:
+                    queue.append((linked, depth + 1))
     return results
 
 
@@ -361,15 +467,23 @@ def _resolved_scalar(prompt: dict[str, Any], value: Any) -> Any:
     return None
 
 
-def extract_generation_metadata(prompt: dict[str, Any], prompt_override: str = "") -> GenerationMetadata:
+def extract_generation_metadata(
+    prompt: dict[str, Any],
+    prompt_override: str = "",
+    *,
+    root_node_id: str | None = None,
+) -> GenerationMetadata:
     positive_candidates: list[str] = []
     negative_candidates: list[str] = []
     sampler_inputs: dict[str, Any] = {}
 
+    allowed_nodes = upstream_node_ids(prompt, root_node_id) if root_node_id else None
     for raw_node_id, node in prompt.items():
         if not isinstance(node, dict) or node.get("class_type") == "CivitAIPublisher":
             continue
         node_id = str(raw_node_id)
+        if allowed_nodes is not None and node_id not in allowed_nodes:
+            continue
         class_type = str(node.get("class_type") or "")
         inputs = node.get("inputs") or {}
         if class_type in {"KSampler", "KSamplerAdvanced", "SamplerCustom"} and not sampler_inputs:

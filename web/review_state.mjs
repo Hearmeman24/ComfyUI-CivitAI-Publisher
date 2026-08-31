@@ -17,13 +17,19 @@ export function normalizeReviewEdits(value = {}) {
 const GROUPS = {
     checkpoint: { label: "Checkpoints", order: 0 },
     lora: { label: "LoRAs", order: 1 },
+    locon: { label: "LoRAs", order: 1 },
+    lycoris: { label: "LoRAs", order: 1 },
+    textualinversion: { label: "Textual Inversions", order: 2 },
+    hypernetwork: { label: "Hypernetworks", order: 3 },
+    controlnet: { label: "ControlNets", order: 4 },
 };
 
 export function resourceGroups(resources = []) {
     const buckets = new Map();
     for (const row of resources) {
+        const resolvedType = String(row.type || row.resource_type || "").toLowerCase();
         const group = row.resolved
-            ? (GROUPS[String(row.resource_type || "").toLowerCase()] || { label: row.type || "Other", order: 50 })
+            ? (GROUPS[resolvedType] || { label: row.type || row.resource_type || "Other", order: 50 })
             : { label: "Unknown", order: 99 };
         if (!buckets.has(group.label)) buckets.set(group.label, { ...group, rows: [] });
         buckets.get(group.label).rows.push(row);

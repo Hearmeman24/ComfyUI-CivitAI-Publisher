@@ -43,6 +43,8 @@ if [[ "$VERIFY_MODE" == "fast" ]]; then
         tests.test_client \
         tests.test_http_boundary \
         tests.test_media \
+        tests.test_logs \
+        tests.test_resolution_cache \
         tests.test_node_contract \
         tests.test_frontend_contract
 else

@@ -38,7 +38,8 @@ class NodeContractTests(unittest.TestCase):
         self.assertEqual(set(inputs["required"]), {
             "title", "tags", "nsfw", "prompt_override", "approval_timeout_minutes",
         })
-        self.assertEqual(set(inputs["optional"]), {"image", "video"})
+        self.assertEqual(set(inputs["optional"]), {"image", "video", "generation_prompt"})
+        self.assertTrue(inputs["optional"]["generation_prompt"][1]["forceInput"])
         self.assertEqual(inputs["hidden"], {"prompt": "PROMPT", "unique_id": "UNIQUE_ID"})
         self.assertEqual(node.RETURN_NAMES, ("post_url", "status", "details"))
         self.assertTrue(node.OUTPUT_NODE)
@@ -73,7 +74,53 @@ class NodeContractTests(unittest.TestCase):
             self._run_node(DecisionState.TIMED_OUT)
         self.assertEqual(self.last_client.publish_calls, 0)
 
-    def _run_node(self, state, return_client=False):
+    def test_connected_generation_prompt_is_the_reviewed_prompt(self):
+        self._run_node(
+            DecisionState.REJECTED,
+            generation_prompt="Exact runtime conditioning prompt",
+        )
+
+        self.assertEqual(self.last_approval_payload.prompt, "Exact runtime conditioning prompt")
+
+    def test_prompt_override_wins_over_connected_generation_prompt(self):
+        self._run_node(
+            DecisionState.REJECTED,
+            generation_prompt="Runtime prompt",
+            prompt_override="Explicit override",
+        )
+
+        self.assertEqual(self.last_approval_payload.prompt, "Explicit override")
+
+    def test_missing_dynamic_prompt_fails_before_review(self):
+        with (
+            mock.patch.object(self.node_module, "resolve_civitai_token", return_value="key"),
+            mock.patch.object(
+                self.node_module,
+                "extract_generation_metadata",
+                return_value=GenerationMetadata(prompt=""),
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "generation_prompt"):
+                asyncio.run(self.node_module.CivitAIPublisher().publish(
+                    title="",
+                    tags="",
+                    nsfw=False,
+                    prompt_override="",
+                    approval_timeout_minutes=5,
+                    image=object(),
+                    video=None,
+                    generation_prompt=None,
+                    prompt={},
+                    unique_id="9",
+                ))
+
+    def _run_node(
+        self,
+        state,
+        return_client=False,
+        generation_prompt="Exact runtime conditioning prompt",
+        prompt_override="",
+    ):
         node_module = self.node_module
 
         @asynccontextmanager
@@ -92,6 +139,7 @@ class NodeContractTests(unittest.TestCase):
 
         class FakeApprovals:
             async def wait_for_decision(self, payload, **_kwargs):
+                self_outer.last_approval_payload = payload
                 return ApprovalDecision(
                     state=node_module.DecisionState(state.value),
                     title="Reviewed",
@@ -104,13 +152,17 @@ class NodeContractTests(unittest.TestCase):
             def __init__(self, _token):
                 self.publish_calls = 0
 
-            async def resolve_resources(self, resources):
+            async def resolve_resources(self, resources, **_kwargs):
                 return resources
 
             async def publish_post(self, **_kwargs):
                 self.publish_calls += 1
                 return PublishResult(8, "https://civitai.com/posts/8")
 
+            async def close(self):
+                return None
+
+        self_outer = self
         client = FakeClient("key")
         self.last_client = client
         with (
@@ -129,10 +181,11 @@ class NodeContractTests(unittest.TestCase):
                 title="",
                 tags="one",
                 nsfw=False,
-                prompt_override="",
+                prompt_override=prompt_override,
                 approval_timeout_minutes=5,
                 image=object(),
                 video=None,
+                generation_prompt=generation_prompt,
                 prompt={},
                 unique_id="9",
             ))

@@ -6,10 +6,12 @@ from pathlib import Path
 
 from civitai_publisher.client import (
     CivitAIClient,
+    CivitAIHTTPError,
     MediaUpload,
     PartialPostError,
     build_civitai_metadata,
 )
+from civitai_publisher.resolution_cache import ResolutionCache
 from civitai_publisher.workflow import GenerationMetadata, HashedResource
 
 
@@ -33,6 +35,68 @@ class FakeTransport:
 
 
 class CivitAIClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_resolution_cache_avoids_repeating_hash_lookup(self):
+        class ResolutionTransport(FakeTransport):
+            async def json(self, method, url, *, token, payload=None, timeout=30):
+                self.calls.append(("json", method, url, payload, token, timeout))
+                return {
+                    "id": 20,
+                    "modelId": 10,
+                    "name": "Version",
+                    "model": {"name": "Model", "type": "Checkpoint"},
+                }
+
+        transport = ResolutionTransport()
+        resource = HashedResource(
+            filename="base.safetensors",
+            category="diffusion_models",
+            path=Path("/models/base.safetensors"),
+            resource_type="checkpoint",
+            sha256="a" * 64,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = ResolutionCache(Path(tmp) / "resources.json")
+            client = CivitAIClient("token", transport=transport, resolution_cache=cache)
+
+            first = await client.resolve_resources([resource])
+            second = await client.resolve_resources([resource])
+
+        self.assertTrue(first[0].resolved)
+        self.assertTrue(second[0].resolved)
+        self.assertEqual(len(transport.calls), 1)
+
+    async def test_resolution_retries_read_only_transient_error(self):
+        class RetryTransport(FakeTransport):
+            def __init__(self):
+                super().__init__()
+                self.attempts = 0
+
+            async def json(self, method, url, *, token, payload=None, timeout=30):
+                self.attempts += 1
+                if self.attempts == 1:
+                    raise CivitAIHTTPError(503, "temporary")
+                return {
+                    "id": 20,
+                    "modelId": 10,
+                    "name": "Version",
+                    "model": {"name": "Model", "type": "Checkpoint"},
+                }
+
+        transport = RetryTransport()
+        client = CivitAIClient("token", transport=transport, retry_delays=(0,))
+        resource = HashedResource(
+            filename="base.safetensors",
+            category="diffusion_models",
+            path=Path("/models/base.safetensors"),
+            resource_type="checkpoint",
+            sha256="b" * 64,
+        )
+
+        resolved = await client.resolve_resources([resource])
+
+        self.assertTrue(resolved[0].resolved)
+        self.assertEqual(transport.attempts, 2)
+
     def test_metadata_links_every_resolved_resource_and_preserves_unknown_hashes(self):
         resources = [
             HashedResource(

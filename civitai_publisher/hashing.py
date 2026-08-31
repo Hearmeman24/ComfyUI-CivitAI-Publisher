@@ -6,7 +6,10 @@ import os
 import threading
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
+
+from . import logs
 
 
 def hash_file(path: Path, cancel: Callable[[], None] | None = None) -> str:
@@ -22,13 +25,14 @@ def hash_file(path: Path, cancel: Callable[[], None] | None = None) -> str:
 
 
 class HashCache:
-    """Persistent SHA-256 cache keyed by exact path, size, and nanosecond mtime."""
+    """Persistent SHA-256 cache keyed by the resolved file's stable identity."""
 
     def __init__(self, path: str | os.PathLike[str]):
         self.path = Path(path)
         self._lock = threading.RLock()
         self._loaded = False
         self._entries: dict[str, dict[str, int | str]] = {}
+        self._inflight: dict[tuple[str, int, int, int], threading.Event] = {}
 
     def _load(self) -> None:
         if self._loaded:
@@ -46,35 +50,102 @@ class HashCache:
                 if isinstance(value, dict)
             }
 
-    def _save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+    def _save(self) -> bool:
         temporary = self.path.with_name(
             f".{self.path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp"
         )
-        temporary.write_text(
-            json.dumps({"version": 1, "entries": self._entries}, sort_keys=True),
-            encoding="utf-8",
-        )
-        os.replace(temporary, self.path)
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            temporary.write_text(
+                json.dumps({"version": 1, "entries": self._entries}, sort_keys=True),
+                encoding="utf-8",
+            )
+            os.replace(temporary, self.path)
+        except OSError as error:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+            logs.warn("hash_cache_write_failed", error=type(error).__name__)
+            return False
+        return True
 
-    def sha256_for(self, path: str | os.PathLike[str], cancel: Callable[[], None] | None = None) -> str:
+    def lookup(
+        self,
+        path: str | os.PathLike[str],
+        cancel: Callable[[], None] | None = None,
+    ) -> HashLookup:
         model_path = Path(path).resolve(strict=True)
         stat = model_path.stat()
         key = str(model_path)
-        identity = {"size": int(stat.st_size), "mtime_ns": int(stat.st_mtime_ns)}
-        with self._lock:
-            self._load()
-            cached = self._entries.get(key)
-            if (
-                cached
-                and cached.get("size") == identity["size"]
-                and cached.get("mtime_ns") == identity["mtime_ns"]
-                and isinstance(cached.get("sha256"), str)
-            ):
-                return str(cached["sha256"])
+        identity = {
+            "size": int(stat.st_size),
+            "mtime_ns": int(stat.st_mtime_ns),
+            "ctime_ns": int(stat.st_ctime_ns),
+            "inode": int(stat.st_ino),
+            "device": int(stat.st_dev),
+        }
+        inflight_key = (key, identity["size"], identity["mtime_ns"], identity["ctime_ns"])
 
-        sha256 = hash_file(model_path, cancel=cancel)
-        with self._lock:
-            self._entries[key] = {**identity, "sha256": sha256}
-            self._save()
-        return sha256
+        while True:
+            with self._lock:
+                self._load()
+                cached = self._entries.get(key)
+                legacy_identity_matches = (
+                    cached
+                    and cached.get("size") == identity["size"]
+                    and cached.get("mtime_ns") == identity["mtime_ns"]
+                )
+                extended_identity_matches = all(
+                    cached.get(field) in (None, identity[field])
+                    for field in ("ctime_ns", "inode", "device")
+                ) if cached else False
+                if (
+                    legacy_identity_matches
+                    and extended_identity_matches
+                    and isinstance(cached.get("sha256"), str)
+                ):
+                    if any(field not in cached for field in ("ctime_ns", "inode", "device")):
+                        self._entries[key] = {**cached, **identity}
+                        self._save()
+                    return HashLookup(
+                        sha256=str(cached["sha256"]),
+                        cached=True,
+                        bytes_read=0,
+                    )
+
+                waiter = self._inflight.get(inflight_key)
+                if waiter is None:
+                    waiter = threading.Event()
+                    self._inflight[inflight_key] = waiter
+                    break
+
+            while not waiter.wait(0.1):
+                if cancel is not None:
+                    cancel()
+
+        try:
+            sha256 = hash_file(model_path, cancel=cancel)
+            with self._lock:
+                self._entries[key] = {**identity, "sha256": sha256}
+                self._save()
+            return HashLookup(
+                sha256=sha256,
+                cached=False,
+                bytes_read=identity["size"],
+            )
+        finally:
+            with self._lock:
+                finished = self._inflight.pop(inflight_key, None)
+                if finished is not None:
+                    finished.set()
+
+    def sha256_for(self, path: str | os.PathLike[str], cancel: Callable[[], None] | None = None) -> str:
+        return self.lookup(path, cancel=cancel).sha256
+
+
+@dataclass(frozen=True)
+class HashLookup:
+    sha256: str
+    cached: bool
+    bytes_read: int
