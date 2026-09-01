@@ -268,7 +268,14 @@ class CivitAIPublisher:
                     )
                 if decision.state is DecisionState.TIMED_OUT:
                     _notify_status(node_id, decision.request_id, "timed_out")
-                    raise RuntimeError("CivitAI review timed out; nothing was uploaded")
+                    return "", "timed_out", json.dumps(
+                        {
+                            "uploaded": False,
+                            "reason": "timed_out",
+                            "resource_count": len(resolved_resources),
+                        },
+                        separators=(",", ":"),
+                    )
 
                 reviewed_generation = replace(generation, prompt=decision.prompt)
                 metadata = build_civitai_metadata(

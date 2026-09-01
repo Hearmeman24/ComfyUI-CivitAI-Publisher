@@ -69,10 +69,16 @@ class NodeContractTests(unittest.TestCase):
         self.assertEqual(result[0:2], ("https://civitai.com/posts/8", "published"))
         self.assertEqual(client.publish_calls, 1)
 
-    def test_timeout_raises_without_uploading(self):
-        with self.assertRaisesRegex(RuntimeError, "timed out"):
-            self._run_node(DecisionState.TIMED_OUT)
-        self.assertEqual(self.last_client.publish_calls, 0)
+    def test_timeout_returns_successfully_without_uploading(self):
+        result, client = self._run_node(DecisionState.TIMED_OUT, return_client=True)
+
+        self.assertEqual(result[0:2], ("", "timed_out"))
+        self.assertEqual(json.loads(result[2]), {
+            "uploaded": False,
+            "reason": "timed_out",
+            "resource_count": 0,
+        })
+        self.assertEqual(client.publish_calls, 0)
 
     def test_connected_generation_prompt_is_the_reviewed_prompt(self):
         self._run_node(
