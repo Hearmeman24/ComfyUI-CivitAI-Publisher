@@ -16,7 +16,10 @@ from .civitai_publisher.workflow import (
     extract_generation_metadata,
 )
 
-DESCRIPTION = "Created with ComfyUI and CivitAI Publisher by HearmemanAI."
+DESCRIPTION = (
+    "This image was posted using the ComfyUI CivitAI Publisher: "
+    "https://github.com/Hearmeman24/ComfyUI-CivitAI-Publisher"
+)
 
 
 def resolve_civitai_token() -> str:

@@ -69,6 +69,15 @@ class NodeContractTests(unittest.TestCase):
         self.assertEqual(result[0:2], ("https://civitai.com/posts/8", "published"))
         self.assertEqual(client.publish_calls, 1)
 
+    def test_approve_appends_publisher_attribution_and_github_link(self):
+        _result, client = self._run_node(DecisionState.APPROVED, return_client=True)
+
+        self.assertEqual(
+            client.publish_kwargs["description"],
+            "This image was posted using the ComfyUI CivitAI Publisher: "
+            "https://github.com/Hearmeman24/ComfyUI-CivitAI-Publisher",
+        )
+
     def test_timeout_returns_successfully_without_uploading(self):
         result, client = self._run_node(DecisionState.TIMED_OUT, return_client=True)
 
@@ -157,12 +166,14 @@ class NodeContractTests(unittest.TestCase):
         class FakeClient:
             def __init__(self, _token):
                 self.publish_calls = 0
+                self.publish_kwargs = None
 
             async def resolve_resources(self, resources, **_kwargs):
                 return resources
 
             async def publish_post(self, **_kwargs):
                 self.publish_calls += 1
+                self.publish_kwargs = _kwargs
                 return PublishResult(8, "https://civitai.com/posts/8")
 
             async def close(self):
