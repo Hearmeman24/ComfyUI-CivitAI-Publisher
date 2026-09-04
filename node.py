@@ -137,6 +137,17 @@ class CivitAIPublisher:
                         ),
                     },
                 ),
+                "workflow_link": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "placeholder": "Optional CivitAI workflow model URL",
+                        "tooltip": (
+                            "Links every uploaded image or video to the latest published version of "
+                            "this CivitAI Workflow model. Add ?modelVersionId=<id> to pin a version."
+                        ),
+                    },
+                ),
             },
             "hidden": {"prompt": "PROMPT", "unique_id": "UNIQUE_ID"},
         }
@@ -162,6 +173,7 @@ class CivitAIPublisher:
         image: Any | None = None,
         video: Any | None = None,
         generation_prompt: str | None = None,
+        workflow_link: str = "",
         prompt: dict[str, Any] | None = None,
         unique_id: str | None = None,
     ):
@@ -173,6 +185,7 @@ class CivitAIPublisher:
             has_video=video is not None,
             has_generation_prompt=bool(isinstance(generation_prompt, str) and generation_prompt.strip()),
             has_prompt_override=bool(prompt_override.strip()),
+            has_workflow_link=bool(workflow_link.strip()),
         )
         if image is None and video is None:
             raise ValueError("Connect an IMAGE or VIDEO before queueing CivitAI Publisher")
@@ -226,6 +239,13 @@ class CivitAIPublisher:
                     fields["resources"] = len(resources)
                     fields["resolved"] = sum(resource.resolved for resource in resolved_resources)
 
+                linked_workflow = None
+                if workflow_link.strip():
+                    with logs.timed("workflow_resolution", node_id=node_id) as fields:
+                        linked_workflow = await client.resolve_workflow_link(workflow_link)
+                        fields["model_id"] = linked_workflow.model_id
+                        fields["model_version_id"] = linked_workflow.model_version_id
+
                 first = media.uploads[0]
                 payload = ApprovalPayload(
                     node_id=node_id,
@@ -236,6 +256,7 @@ class CivitAIPublisher:
                     nsfw=bool(nsfw),
                     media=media.previews,
                     resources=tuple(resource.public() for resource in resolved_resources),
+                    workflow=linked_workflow.public() if linked_workflow is not None else None,
                     metadata={
                         "seed": generation.seed,
                         "steps": generation.steps,
@@ -250,6 +271,7 @@ class CivitAIPublisher:
                     node_id=node_id,
                     media=len(media.uploads),
                     resources=len(resolved_resources),
+                    has_workflow=linked_workflow is not None,
                 )
                 decision = await APPROVALS.wait_for_decision(
                     payload,
@@ -286,6 +308,7 @@ class CivitAIPublisher:
                     resolved_resources,
                     width=first.width,
                     height=first.height,
+                    linked_workflow=linked_workflow,
                 )
                 _interrupt_check()
                 _notify_status(node_id, decision.request_id, "publishing")
@@ -326,6 +349,9 @@ class CivitAIPublisher:
                     "resource_count": len(resolved_resources),
                     "resolved_resource_count": sum(resource.resolved for resource in resolved_resources),
                 }
+                if linked_workflow is not None:
+                    details["workflow_model_id"] = linked_workflow.model_id
+                    details["workflow_model_version_id"] = linked_workflow.model_version_id
                 return result.post_url, "published", json.dumps(details, separators=(",", ":"))
             finally:
                 close = getattr(client, "close", None)

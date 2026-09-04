@@ -13,6 +13,8 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('document.createElement("canvas")', source)
         self.assertIn('document.createElement("video")', source)
         self.assertIn('decide(node, "reject")', source)
+        self.assertIn("review.workflow", source)
+        self.assertIn("Linked workflow", source)
         self.assertNotIn("Rejecting…", source)
         self.assertIn("/civitai_publisher/pending", source)
         self.assertIn('api.addEventListener("civitai_publisher.closed"', source)

@@ -26,6 +26,7 @@ class ApprovalPayload:
     negative_prompt: str = ""
     media: tuple[dict[str, Any], ...] = ()
     resources: tuple[dict[str, Any], ...] = ()
+    workflow: dict[str, Any] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def public(self, request_id: str) -> dict[str, Any]:
@@ -39,6 +40,7 @@ class ApprovalPayload:
             "nsfw": self.nsfw,
             "media": list(self.media),
             "resources": list(self.resources),
+            "workflow": dict(self.workflow) if self.workflow is not None else None,
             "metadata": dict(self.metadata),
         }
 

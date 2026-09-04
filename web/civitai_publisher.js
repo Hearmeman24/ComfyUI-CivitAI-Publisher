@@ -11,7 +11,7 @@ const DECISION_PATH = "/civitai_publisher/decision";
 const PENDING_PATH = "/civitai_publisher/pending";
 const NODE_WIDTH = 560;
 const REVIEW_HEIGHT = 700;
-const STYLE_VERSION = "20260831-3";
+const STYLE_VERSION = "20260904-1";
 const liveNodes = new Map();
 const waitingReviews = new Map();
 const knownReviews = new Set();
@@ -237,6 +237,21 @@ function renderResources(node, resources) {
     }
 }
 
+function workflowChip(workflow) {
+    if (!workflow || typeof workflow.url !== "string" || !workflow.url) return null;
+    const label = [workflow.name, workflow.versionName].filter(Boolean).join(" · ");
+    const link = el(
+        "a",
+        "civitai-publisher-chip civitai-publisher-workflow-link",
+        `Linked workflow: ${label || `version ${workflow.modelVersionId}`}`,
+    );
+    link.href = workflow.url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.title = workflow.url;
+    return link;
+}
+
 function setStatus(node, state, text, postUrl = "") {
     const body = node._civitaiPublisherBody;
     body.root.dataset.state = state;
@@ -281,7 +296,10 @@ function attachReview(node, review) {
     const body = node._civitaiPublisherBody;
     const hasMedia = renderMedia(node, review.media || []);
     body.prompt.value = review.prompt || "";
-    body.metadata.replaceChildren(...metadataText(review.metadata).map((item) => el("span", "civitai-publisher-chip", item)));
+    const metadata = metadataText(review.metadata).map((item) => el("span", "civitai-publisher-chip", item));
+    const linkedWorkflow = workflowChip(review.workflow);
+    if (linkedWorkflow) metadata.push(linkedWorkflow);
+    body.metadata.replaceChildren(...metadata);
     if (review.negative_prompt) {
         body.negative.hidden = false;
         body.negativeText.textContent = review.negative_prompt;
@@ -297,6 +315,7 @@ function attachReview(node, review) {
         node_id: review.node_id,
         media: (review.media || []).length,
         resources: (review.resources || []).length,
+        has_workflow: Boolean(review.workflow),
     });
 }
 

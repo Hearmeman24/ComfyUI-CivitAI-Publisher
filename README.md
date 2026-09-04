@@ -35,12 +35,14 @@ export CIVITAI_TOKEN="your-token"
 1. Add **CivitAI Publisher (Review Before Upload)** from `HearmemanAI/CivitAI`.
 2. Connect an `IMAGE`, a native ComfyUI `VIDEO`, or both.
 3. If conditioning receives a dynamic prompt from OpenRouter, Ollama, or another runtime node, connect that same `STRING` to `generation_prompt`. The publisher cannot reconstruct a runtime output from the queued graph alone.
-4. Optionally set a title, comma-separated tags, NSFW, or `prompt_override`. Prompt precedence is: nonblank override, connected runtime prompt, then a literal prompt found on the media branch. A dynamic prompt without either explicit input fails before review instead of guessing from an LLM system prompt.
+4. Optionally set a title, comma-separated tags, NSFW, `prompt_override`, or a CivitAI `workflow_link`. Prompt precedence is: nonblank override, connected runtime prompt, then a literal prompt found on the media branch. A dynamic prompt without either explicit input fails before review instead of guessing from an LLM system prompt.
 5. Queue the workflow. The publisher prepares a temporary preview, discovers and hashes the publishable weights on the connected media lineage, and resolves their CivitAI versions.
 6. Inspect the playable media, final prompt, generation metadata, resolved resources, LoRA strengths, and unknown local files directly in the node.
 7. Choose **Reject** or **Approve & publish**.
 
-An image batch and an optional video are added to one CivitAI post. Published posts include a short attribution and the GitHub repository link. The node returns the post URL, terminal status, and a compact JSON summary. Reject and review timeout are successful terminal executions with `rejected` and `timed_out` status respectively; both return an empty post URL and `"uploaded": false` rather than failing the ComfyUI pipeline. Published NSFW posts return a `civitai.red/posts/<id>` viewing URL; non-NSFW posts return `civitai.com/posts/<id>`. API traffic continues to use `civitai.com` in both cases.
+An image batch and an optional video are added to one CivitAI post. When `workflow_link` contains a `civitai.com/models/...` or `civitai.red/models/...` URL, every uploaded media item is linked to that Workflow resource. A model-page URL follows its latest published public version; add `?modelVersionId=<id>` to pin one version. The resolved workflow and version appear in the review canvas. Invalid links, missing versions, and links to non-Workflow resources fail before review and upload.
+
+Published posts include a short attribution and the GitHub repository link. The node returns the post URL, terminal status, and a compact JSON summary. Reject and review timeout are successful terminal executions with `rejected` and `timed_out` status respectively; both return an empty post URL and `"uploaded": false` rather than failing the ComfyUI pipeline. Published NSFW posts return a `civitai.red/posts/<id>` viewing URL; non-NSFW posts return `civitai.com/posts/<id>`. API traffic continues to use `civitai.com` in both cases.
 
 [`examples/civitai-publisher-empty-image.json`](examples/civitai-publisher-empty-image.json) is a safe starter workflow for exercising the embedded review and Reject path. It does not use model weights.
 

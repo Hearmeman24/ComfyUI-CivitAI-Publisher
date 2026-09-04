@@ -28,6 +28,23 @@ class ApprovalManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decision.state, DecisionState.REJECTED)
         self.assertEqual(manager.pending_public(), [])
 
+    def test_public_review_includes_resolved_workflow_without_private_fields(self):
+        payload = ApprovalPayload(
+            node_id="9",
+            title="Title",
+            prompt="Prompt",
+            workflow={
+                "modelId": 2850104,
+                "modelVersionId": 3295293,
+                "name": "MiniMax H3 workflows",
+                "versionName": "v2.0",
+                "url": "https://civitai.red/models/2850104/example",
+            },
+        ).public("approval-workflow")
+
+        self.assertEqual(payload["workflow"]["modelVersionId"], 3295293)
+        self.assertNotIn("token", payload)
+
     async def test_approval_returns_only_validated_review_edits(self):
         manager = ApprovalManager(id_factory=lambda: "approval-2")
         task = asyncio.create_task(

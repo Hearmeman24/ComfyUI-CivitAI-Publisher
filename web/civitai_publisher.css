@@ -78,6 +78,15 @@
     white-space: nowrap;
 }
 
+.civitai-publisher-workflow-link {
+    color: #d7c4ff;
+    text-decoration: none;
+}
+
+.civitai-publisher-workflow-link:hover {
+    text-decoration: underline;
+}
+
 .civitai-publisher-label {
     display: flex;
     flex-direction: column;
