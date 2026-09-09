@@ -11,7 +11,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 from .resolution_cache import ResolutionCache
 from .workflow import GenerationMetadata, HashedResource
@@ -70,6 +70,31 @@ class PublishResult:
     post_url: str
 
 
+@dataclass(frozen=True)
+class LinkedWorkflow:
+    model_id: int
+    model_version_id: int
+    name: str
+    version_name: str
+    url: str
+
+    def public(self) -> dict[str, Any]:
+        return {
+            "modelId": self.model_id,
+            "modelVersionId": self.model_version_id,
+            "name": self.name,
+            "versionName": self.version_name,
+            "url": self.url,
+        }
+
+
+@dataclass(frozen=True)
+class _WorkflowLinkTarget:
+    model_id: int
+    model_version_id: int | None
+    url: str
+
+
 class Transport(Protocol):
     async def json(
         self,
@@ -106,6 +131,62 @@ def _safe_error(error: BaseException, token: str) -> str:
     message = re.sub(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,;]+", r"\1[redacted]", message)
     message = re.sub(r"https?://[^\s?]+\?[^\s]+", lambda match: _safe_url(match.group(0)), message)
     return message[:1000]
+
+
+def _parse_workflow_link(value: str) -> _WorkflowLinkTarget:
+    text = value.strip()
+    if not text:
+        raise ValueError("CivitAI workflow link is blank")
+    if len(text) > 2048:
+        raise ValueError("CivitAI workflow link is too long")
+    try:
+        parts = urlsplit(text)
+        port = parts.port
+    except ValueError as exc:
+        raise ValueError("CivitAI workflow link is not a valid URL") from exc
+    host = (parts.hostname or "").lower()
+    if (
+        parts.scheme.lower() != "https"
+        or host not in {"civitai.com", "www.civitai.com", "civitai.red", "www.civitai.red"}
+        or parts.username is not None
+        or parts.password is not None
+        or port is not None
+    ):
+        raise ValueError("CivitAI workflow link must use https://civitai.com or https://civitai.red")
+    path_parts = [part for part in parts.path.split("/") if part]
+    if len(path_parts) < 2 or path_parts[0].lower() != "models" or not path_parts[1].isdigit():
+        raise ValueError("CivitAI workflow link must point to /models/<model id>")
+    model_id = int(path_parts[1])
+    if model_id <= 0:
+        raise ValueError("CivitAI workflow link has an invalid model id")
+
+    query = parse_qs(parts.query, keep_blank_values=True)
+    version_values = query.get("modelVersionId", [])
+    model_version_id: int | None = None
+    if version_values:
+        version_text = version_values[-1].strip()
+        if not version_text.isdigit() or int(version_text) <= 0:
+            raise ValueError("CivitAI workflow link has an invalid modelVersionId")
+        model_version_id = int(version_text)
+
+    canonical_host = host.removeprefix("www.")
+    canonical_path = "/" + "/".join(path_parts)
+    canonical_query = urlencode({"modelVersionId": model_version_id}) if model_version_id else ""
+    return _WorkflowLinkTarget(
+        model_id=model_id,
+        model_version_id=model_version_id,
+        url=urlunsplit(("https", canonical_host, canonical_path, canonical_query, "")),
+    )
+
+
+def _workflow_type(payload: dict[str, Any]) -> str:
+    model = payload.get("model") if isinstance(payload.get("model"), dict) else {}
+    return str(model.get("type") or payload.get("type") or "")
+
+
+def _require_workflow_type(payload: dict[str, Any]) -> None:
+    if _workflow_type(payload).lower() not in {"workflow", "workflows"}:
+        raise ValueError("The CivitAI model link is not a Workflow resource")
 
 
 class AioHttpTransport:
@@ -266,6 +347,7 @@ def build_civitai_metadata(
     *,
     width: int | None = None,
     height: int | None = None,
+    linked_workflow: LinkedWorkflow | None = None,
 ) -> dict[str, Any]:
     metadata: dict[str, Any] = {
         "prompt": generation.prompt or "AI generation",
@@ -308,6 +390,15 @@ def build_civitai_metadata(
             if resource.version_name:
                 linked["versionName"] = resource.version_name
             civitai_resources.append(linked)
+    if linked_workflow is not None and all(
+        item.get("modelVersionId") != linked_workflow.model_version_id
+        for item in civitai_resources
+    ):
+        civitai_resources.append({
+            "modelVersionId": linked_workflow.model_version_id,
+            "modelName": linked_workflow.name,
+            "versionName": linked_workflow.version_name,
+        })
     if hashes:
         metadata["hashes"] = hashes
         metadata["resources"] = legacy_resources
@@ -350,12 +441,17 @@ class CivitAIClient:
                 await result
 
     async def _resolution_request(self, resource: HashedResource) -> dict[str, Any]:
+        return await self._read_request(
+            f"{self._api}/v1/model-versions/by-hash/{resource.sha256}"
+        )
+
+    async def _read_request(self, url: str) -> dict[str, Any]:
         retryable_statuses = {408, 429, 500, 502, 503, 504}
         for attempt in range(len(self._retry_delays) + 1):
             try:
                 return await self._transport.json(
                     "GET",
-                    f"{self._api}/v1/model-versions/by-hash/{resource.sha256}",
+                    url,
                     token=self._token,
                     timeout=20,
                 )
@@ -372,6 +468,65 @@ class CivitAIClient:
                 delay = self._retry_delays[attempt] * random.uniform(0.8, 1.2)
                 await asyncio.sleep(max(0.0, min(float(delay), 5.0)))
         raise RuntimeError("unreachable resolution retry state")
+
+    async def resolve_workflow_link(self, value: str) -> LinkedWorkflow:
+        target = _parse_workflow_link(value)
+        try:
+            if target.model_version_id is not None:
+                payload = await self._read_request(
+                    f"{self._api}/v1/model-versions/{target.model_version_id}"
+                )
+                if int(payload.get("modelId") or 0) != target.model_id:
+                    raise ValueError("CivitAI workflow modelVersionId does not belong to the linked model")
+                _require_workflow_type(payload)
+                model = payload.get("model") if isinstance(payload.get("model"), dict) else {}
+                return LinkedWorkflow(
+                    model_id=target.model_id,
+                    model_version_id=target.model_version_id,
+                    name=str(model.get("name") or "CivitAI workflow"),
+                    version_name=str(payload.get("name") or ""),
+                    url=target.url,
+                )
+
+            payload = await self._read_request(f"{self._api}/v1/models/{target.model_id}")
+            if int(payload.get("id") or 0) != target.model_id:
+                raise ValueError("CivitAI returned a different model for the workflow link")
+            _require_workflow_type(payload)
+            raw_versions = payload.get("modelVersions")
+            versions = [
+                version
+                for version in raw_versions
+                if isinstance(version, dict)
+                and version.get("id") is not None
+                and str(version.get("status") or "Published").lower() == "published"
+                and str(version.get("availability") or "Public").lower() == "public"
+            ] if isinstance(raw_versions, list) else []
+            if not versions:
+                raise ValueError("CivitAI workflow has no published public version")
+            version = max(
+                versions,
+                key=lambda item: (
+                    str(item.get("publishedAt") or item.get("createdAt") or ""),
+                    int(item["id"]),
+                ),
+            )
+            return LinkedWorkflow(
+                model_id=target.model_id,
+                model_version_id=int(version["id"]),
+                name=str(payload.get("name") or "CivitAI workflow"),
+                version_name=str(version.get("name") or ""),
+                url=target.url,
+            )
+        except CivitAIHTTPError as exc:
+            if exc.status == 404:
+                raise ValueError("CivitAI workflow link was not found or has no published version") from exc
+            if exc.status in (401, 403):
+                raise RuntimeError("CivitAI rejected the configured API token") from exc
+            raise RuntimeError(f"CivitAI workflow lookup failed: {_safe_error(exc, self._token)}") from exc
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"CivitAI workflow lookup failed: {_safe_error(exc, self._token)}") from exc
 
     async def resolve_resources(
         self,

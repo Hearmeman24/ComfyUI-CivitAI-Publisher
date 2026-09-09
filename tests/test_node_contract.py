@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from civitai_publisher.approval import ApprovalDecision, DecisionState
-from civitai_publisher.client import PublishResult
+from civitai_publisher.client import LinkedWorkflow, PublishResult
 from civitai_publisher.media import MaterializedMedia, MediaUpload
 from civitai_publisher.workflow import GenerationMetadata
 
@@ -38,8 +38,9 @@ class NodeContractTests(unittest.TestCase):
         self.assertEqual(set(inputs["required"]), {
             "title", "tags", "nsfw", "prompt_override", "approval_timeout_minutes",
         })
-        self.assertEqual(set(inputs["optional"]), {"image", "video", "generation_prompt"})
+        self.assertEqual(set(inputs["optional"]), {"image", "video", "generation_prompt", "workflow_link"})
         self.assertTrue(inputs["optional"]["generation_prompt"][1]["forceInput"])
+        self.assertEqual(inputs["optional"]["workflow_link"][1]["default"], "")
         self.assertEqual(inputs["hidden"], {"prompt": "PROMPT", "unique_id": "UNIQUE_ID"})
         self.assertEqual(node.RETURN_NAMES, ("post_url", "status", "details"))
         self.assertTrue(node.OUTPUT_NODE)
@@ -77,6 +78,44 @@ class NodeContractTests(unittest.TestCase):
             "This image was posted using the ComfyUI CivitAI Publisher: "
             "https://github.com/Hearmeman24/ComfyUI-CivitAI-Publisher",
         )
+
+    def test_workflow_link_is_resolved_for_review_and_linked_to_uploaded_media(self):
+        _result, client = self._run_node(
+            DecisionState.APPROVED,
+            return_client=True,
+            workflow_link=(
+                "https://civitai.red/models/2850104/"
+                "minimax-h3-t2v-i2v-workflows-turbo-lora-auto-prompting-and-video-preview"
+            ),
+        )
+
+        self.assertEqual(client.workflow_link_requests, [
+            "https://civitai.red/models/2850104/"
+            "minimax-h3-t2v-i2v-workflows-turbo-lora-auto-prompting-and-video-preview"
+        ])
+        self.assertEqual(self.last_approval_payload.workflow["modelVersionId"], 3295293)
+        self.assertEqual(
+            client.publish_kwargs["metadata"]["civitaiResources"],
+            [{
+                "modelVersionId": 3295293,
+                "modelName": "MiniMax H3 workflows",
+                "versionName": "v2.0",
+            }],
+        )
+        details = json.loads(_result[2])
+        self.assertEqual(details["workflow_model_id"], 2850104)
+        self.assertEqual(details["workflow_model_version_id"], 3295293)
+
+    def test_reject_with_workflow_link_keeps_the_zero_upload_boundary(self):
+        _result, client = self._run_node(
+            DecisionState.REJECTED,
+            return_client=True,
+            workflow_link="https://civitai.red/models/2850104/example",
+        )
+
+        self.assertEqual(len(client.workflow_link_requests), 1)
+        self.assertEqual(self.last_approval_payload.workflow["modelVersionId"], 3295293)
+        self.assertEqual(client.publish_calls, 0)
 
     def test_timeout_returns_successfully_without_uploading(self):
         result, client = self._run_node(DecisionState.TIMED_OUT, return_client=True)
@@ -135,6 +174,7 @@ class NodeContractTests(unittest.TestCase):
         return_client=False,
         generation_prompt="Exact runtime conditioning prompt",
         prompt_override="",
+        workflow_link="",
     ):
         node_module = self.node_module
 
@@ -167,9 +207,20 @@ class NodeContractTests(unittest.TestCase):
             def __init__(self, _token):
                 self.publish_calls = 0
                 self.publish_kwargs = None
+                self.workflow_link_requests = []
 
             async def resolve_resources(self, resources, **_kwargs):
                 return resources
+
+            async def resolve_workflow_link(self, value):
+                self.workflow_link_requests.append(value)
+                return LinkedWorkflow(
+                    model_id=2850104,
+                    model_version_id=3295293,
+                    name="MiniMax H3 workflows",
+                    version_name="v2.0",
+                    url=value,
+                )
 
             async def publish_post(self, **_kwargs):
                 self.publish_calls += 1
@@ -203,6 +254,7 @@ class NodeContractTests(unittest.TestCase):
                 image=object(),
                 video=None,
                 generation_prompt=generation_prompt,
+                workflow_link=workflow_link,
                 prompt={},
                 unique_id="9",
             ))
